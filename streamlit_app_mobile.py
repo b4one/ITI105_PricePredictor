@@ -1,6 +1,8 @@
 """
-File: streamlit_app.py
-Purpose: Enhanced Streamlit web application for HDB price prediction with improved UI
+File: streamlit_app_mobile.py
+Purpose: ITI105 Price Predictor – Responsive (Desktop + Mobile)
+- Mobile-first layout, single header, stable query params, safe Plotly figures
+- Preserves original models, preprocessing, and weighted ensemble
 Author: Team AlgoRiddler - ITI105 Project
 Date: Aug 2025
 Dependencies: streamlit, pandas, numpy, joblib, plotly
@@ -22,7 +24,7 @@ import plotly.express as px
 
 warnings.filterwarnings("ignore")
 
-# ---------- Paths (same behavior as original) ----------
+# ---------- Paths ----------
 try:
     SCRIPT_DIR = Path(__file__).resolve().parent
 except NameError:
@@ -49,30 +51,34 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ---------- Device width detection (stable API) ----------
+# ---------- Device width detection (no st.stop; no blank page) ----------
 def detect_device_width(default: int = 1200) -> int:
+    """Try to read ?w= from URL. If missing, inject a tiny JS to set it, then
+    return a conservative default for this first run so the page still renders."""
     w = st.query_params.get("w")
     if w:
         try:
             return int(w)
         except Exception:
             pass
-    # Inject once to set ?w=<innerWidth> then reload
+
+    # Inject once to set ?w=<innerWidth> on the next run
     components.html(
         """
         <script>
-        const params = new URLSearchParams(window.location.search);
-        if (!params.get('w')) {
-          const w = window.innerWidth || document.documentElement.clientWidth || 1200;
-          params.set('w', w);
-          const newQuery = '?' + params.toString();
-          window.location.replace(window.location.pathname + newQuery);
-        }
+          const params = new URLSearchParams(window.location.search);
+          if (!params.get('w')) {
+            const w = window.innerWidth || document.documentElement.clientWidth || 1200;
+            params.set('w', w);
+            const newQuery = '?' + params.toString();
+            window.history.replaceState(null, '', window.location.pathname + newQuery);
+            // no hard reload -> Streamlit will rerun automatically on next interaction
+          }
         </script>
         """,
         height=0, width=0,
     )
-    return default
+    return default  # first run fallback
 
 SCREEN_WIDTH = detect_device_width()
 IS_MOBILE = SCREEN_WIDTH < 768
@@ -142,7 +148,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ---------- Header (single source of truth to avoid duplicates) ----------
+# ---------- Header (single source; call once from main) ----------
 def render_header():
     st.markdown('<h1 class="main-header">🏠 HDB Price Predictor</h1>', unsafe_allow_html=True)
     st.markdown(
@@ -152,12 +158,12 @@ def render_header():
 
 # ---------- Data & models ----------
 @st.cache_data
-def load_reference_data():
+def load_reference_data(is_mobile: bool):
     try:
         p = RAW_DATA_DIR / "base_hdb_resale_prices_2015Jan-2025Jun.csv"
         if p.exists():
             df = pd.read_csv(p)
-            n = 600 if IS_MOBILE else 1000  # smaller sample on mobile for snappier plots
+            n = 600 if is_mobile else 1000  # smaller sample on mobile
             return {"sample_data": df.sample(min(n, len(df)), random_state=42)}
         return None
     except Exception as e:
@@ -485,8 +491,6 @@ def render_inputs(container):
 
 # ---------- Desktop layout ----------
 def render_desktop(models, reference_data):
-    render_header()
-
     # Sidebar inputs
     st.sidebar.header("🏠 Property Details")
     user_input, remaining_lease = render_inputs(st.sidebar)
@@ -553,19 +557,19 @@ def render_desktop(models, reference_data):
             hdb_ok  = remaining_lease >= 20
             l, r = st.columns(2)
             with l:
-                st.markdown(f'<div class="insight-label">Price per sqm</div>', unsafe_allow_html=True)
+                st.markdown('<div class="insight-label">Price per sqm</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="insight-value">${price_psm:,.0f}</div>', unsafe_allow_html=True)
-                st.markdown(f'<div class="insight-label">Market Segment</div>', unsafe_allow_html=True)
+                st.markdown('<div class="insight-label">Market Segment</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="insight-value">{market_seg}</div>', unsafe_allow_html=True)
-                st.markdown(f'<div class="insight-label">Lease Health</div>', unsafe_allow_html=True)
+                st.markdown('<div class="insight-label">Lease Health</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="insight-value">{lease_health}</div>', unsafe_allow_html=True)
             with r:
-                st.markdown(f'<div class="insight-label">Bank Loan Eligible</div>', unsafe_allow_html=True)
+                st.markdown('<div class="insight-label">Bank Loan Eligible</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="insight-value">{"✅ Yes" if bank_ok else "❌ No"}</div>', unsafe_allow_html=True)
-                st.markdown(f'<div class="insight-label">HDB Loan Eligible</div>', unsafe_allow_html=True)
+                st.markdown('<div class="insight-label">HDB Loan Eligible</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="insight-value">{"✅ Yes" if hdb_ok else "❌ No"}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="insight-label">Remaining Lease</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="insight-value">{remaining_lease} years</div>', unsafe_allow_html=True)
-                st.markdown(f'<div class="insight-value">{remaining_lease} years</div>', unsafe_allow_html=True) 
 
         st.subheader("🤖 About the Models")
         st.info("""**Ensemble Approach:**
@@ -580,13 +584,9 @@ def render_desktop(models, reference_data):
 
 # ---------- Mobile layout ----------
 def render_mobile(models, reference_data):
-    render_header()
-
-    # Inputs on main view (sidebar hidden on mobile via CSS)
     exp = st.expander("🔧 Property Details", expanded=True)
     user_input, remaining_lease = render_inputs(exp)
 
-    # Predict button (full width)
     if st.button("🔮 Predict Price", type="primary", use_container_width=True):
         with st.spinner('Generating predictions...'):
             preds = predict_price(user_input, models)
@@ -649,7 +649,7 @@ def render_mobile(models, reference_data):
         st.markdown('<div class="insight-label">HDB Loan Eligible</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="insight-value">{"✅ Yes" if hdb_ok else "❌ No"}</div>', unsafe_allow_html=True)
 
-    # Re-detect layout (e.g., rotation)
+    # Re-detect layout (rotation etc.)
     with st.expander("⚙️ Layout options"):
         if st.button("Re-detect screen size", use_container_width=True):
             if "w" in st.query_params:
@@ -657,10 +657,10 @@ def render_mobile(models, reference_data):
             components.html(
                 """
                 <script>
-                const params = new URLSearchParams(window.location.search);
-                params.delete('w');
-                const qs = params.toString();
-                window.location.replace(window.location.pathname + (qs ? '?' + qs : ''));
+                  const params = new URLSearchParams(window.location.search);
+                  params.delete('w');
+                  const qs = params.toString();
+                  window.history.replaceState(null, '', window.location.pathname + (qs ? '?' + qs : ''));
                 </script>
                 """,
                 height=0, width=0
@@ -669,9 +669,16 @@ def render_mobile(models, reference_data):
 
 # ---------- Main ----------
 def main():
+    # Single header render
+    st.markdown('<h1 class="main-header">🏠 HDB Price Predictor</h1>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="info-center">Predict HDB resale prices using advanced machine learning ensemble models</div>',
+        unsafe_allow_html=True
+    )
+
     with st.spinner("Loading ML models & data…"):
         models = load_models()
-        reference_data = load_reference_data()
+        reference_data = load_reference_data(IS_MOBILE)
 
     if 'predictions' not in st.session_state:
         st.session_state.predictions = None
