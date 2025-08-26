@@ -11,7 +11,6 @@ Output: Price predictions with confidence intervals and market insights
 from __future__ import annotations
 import warnings
 from pathlib import Path
-from datetime import datetime
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -43,7 +42,6 @@ for p in [RAW_DATA_DIR, PROCESSED_DATA_DIR, MODELS_DIR, OUTPUT_DIR]:
     p.mkdir(parents=True, exist_ok=True)
 
 # ---------- Page config ----------
-# Keep "wide" for desktop; we'll tune mobile via CSS & layout branching
 st.set_page_config(
     page_title="HDB Price Predictor",
     page_icon="🏠",
@@ -51,17 +49,15 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ---------- Utility: detect device width via URL param (?w=) ----------
+# ---------- Device width detection (stable API) ----------
 def detect_device_width(default: int = 1200) -> int:
-    # st.query_params is the stable replacement for the experimental API
     w = st.query_params.get("w")
     if w:
         try:
             return int(w)
         except Exception:
-            pass  # fall through to inject JS below if parsing fails
-
-    # Inject only once to capture viewport width into the URL (?w=)
+            pass
+    # Inject once to set ?w=<innerWidth> then reload
     components.html(
         """
         <script>
@@ -76,16 +72,15 @@ def detect_device_width(default: int = 1200) -> int:
         """,
         height=0, width=0,
     )
-    return default  # first run (before reload); subsequent runs will read ?w=
+    return default
 
 SCREEN_WIDTH = detect_device_width()
 IS_MOBILE = SCREEN_WIDTH < 768
 
-# ---------- CSS (desktop defaults + mobile tweaks) ----------
+# ---------- CSS ----------
 st.markdown(
     """
 <style>
-/* Base visuals (kept from your app, tuned) */
 .main-header {
   font-size: 3rem;
   font-weight: 800;
@@ -93,22 +88,22 @@ st.markdown(
   background: linear-gradient(90deg, #1f77b4, #ff7f0e);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
-  margin-bottom: 1.25rem;
+  margin-bottom: 1.0rem;
 }
 .info-center{
   max-width:1500px;
   text-align:center;
-  font-size:1.10rem;
+  font-size:1.05rem;
   font-weight:600;
   background:#f8f9fa;
-  padding:0.75rem 1rem;
+  padding:0.7rem 1rem;
   border-radius:10px;
   border-left:4px solid #17a2b8;
   margin-bottom: 1rem;
 }
 .prediction-card {
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  padding: 1.5rem;
+  padding: 1.25rem;
   border-radius: 14px;
   color: white;
   text-align: center;
@@ -116,7 +111,7 @@ st.markdown(
 }
 .metric-card {
   background: white;
-  padding: 1rem;
+  padding: 0.9rem;
   border-radius: 10px;
   box-shadow: 0 4px 6px rgba(0,0,0,0.08);
   border-left: 4px solid #1f77b4;
@@ -133,19 +128,27 @@ st.markdown(
 .insight-value { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem; }
 .block-container { padding-top: 0.75rem; }
 
-/* Mobile: stack layout, shrink fonts, hide sidebar */
+/* Mobile tweaks */
 @media (max-width: 768px) {
   [data-testid="stSidebar"] { display: none; }
-  .main-header { font-size: 2rem; margin-bottom: 0.75rem; }
-  .info-center { font-size: 1rem; padding: 0.6rem 0.8rem; }
-  .prediction-card { padding: 1rem; }
-  .metric-card { padding: 0.8rem; }
+  .main-header { font-size: 2rem; margin-bottom: 0.6rem; }
+  .info-center { font-size: 0.95rem; padding: 0.55rem 0.8rem; }
+  .prediction-card { padding: 0.9rem; }
+  .metric-card { padding: 0.75rem; }
   .block-container { padding: 0.5rem; }
 }
 </style>
 """,
     unsafe_allow_html=True,
 )
+
+# ---------- Header (single source of truth to avoid duplicates) ----------
+def render_header():
+    st.markdown('<h1 class="main-header">🏠 HDB Price Predictor</h1>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="info-center">Predict HDB resale prices using advanced machine learning ensemble models</div>',
+        unsafe_allow_html=True
+    )
 
 # ---------- Data & models ----------
 @st.cache_data
@@ -154,8 +157,7 @@ def load_reference_data():
         p = RAW_DATA_DIR / "base_hdb_resale_prices_2015Jan-2025Jun.csv"
         if p.exists():
             df = pd.read_csv(p)
-            # Smaller sample on mobile for snappier plots
-            n = 600 if IS_MOBILE else 1000
+            n = 600 if IS_MOBILE else 1000  # smaller sample on mobile for snappier plots
             return {"sample_data": df.sample(min(n, len(df)), random_state=42)}
         return None
     except Exception as e:
@@ -207,7 +209,6 @@ def get_storey_category(storey_level):
 # ---------- Preprocessing ----------
 def preprocess_input_linear(user_input, preprocessing_objects):
     features = {}
-    # Numerical
     features['floor_area_sqm'] = user_input['floor_area_sqm']
     features['storey_level'] = user_input['storey_level']
     features['flat_age'] = user_input['flat_age']
@@ -220,18 +221,19 @@ def preprocess_input_linear(user_input, preprocessing_objects):
     features['bank_loan_eligible'] = 1 if features['remaining_lease_years'] >= 60 else 0
     features['hdb_loan_eligible'] = 1 if features['remaining_lease_years'] >= 20 else 0
     features['cash_buyers_only'] = 1 if features['remaining_lease_years'] < 20 else 0
-    # Categorical (OHE)
+
     categorical_features = ['town','flat_type','flat_model','market_segment','lease_health','storey_category']
     feature_names = preprocessing_objects.get('feature_names', [])
     one_hot_categories = preprocessing_objects.get('one_hot_categories')
+
     for cat in categorical_features:
         if cat == 'market_segment': val = get_market_segment(user_input['flat_type'])
         elif cat == 'lease_health': val = get_lease_health(features['remaining_lease_years'])
         elif cat == 'storey_category': val = get_storey_category(user_input['storey_level'])
         else: val = user_input[cat]
+
         if one_hot_categories and (cat in one_hot_categories):
-            categories = one_hot_categories[cat]
-            for c in categories:
+            for c in one_hot_categories[cat]:
                 features[f'{cat}_{c}'] = 1 if str(val) == str(c) else 0
         else:
             prefix = f'{cat}_'
@@ -240,11 +242,13 @@ def preprocess_input_linear(user_input, preprocessing_objects):
                 target = f'{prefix}{val}'
                 for c in candidates:
                     features[c] = 1 if c == target else 0
+
     feature_df = pd.DataFrame([features])
     for col in feature_names:
         if col not in feature_df.columns:
             feature_df[col] = 0
     feature_df = feature_df.reindex(columns=feature_names, fill_value=0)
+
     scaler = preprocessing_objects.get('scaler')
     if scaler is not None:
         try:
@@ -259,11 +263,11 @@ def preprocess_input_linear(user_input, preprocessing_objects):
                 feature_df[Xs.columns] = scaler.transform(Xs)
         except Exception as e:
             st.warning(f"[linear] scaler.transform failed; continuing unscaled. Error: {e}")
+
     return feature_df.values
 
 def preprocess_input_tree(user_input, preprocessing_objects):
     features = {}
-    # Numerical
     features['floor_area_sqm'] = user_input['floor_area_sqm']
     features['storey_level'] = user_input['storey_level']
     features['flat_age'] = user_input['flat_age']
@@ -276,10 +280,11 @@ def preprocess_input_tree(user_input, preprocessing_objects):
     features['bank_loan_eligible'] = 1 if features['remaining_lease_years'] >= 60 else 0
     features['hdb_loan_eligible'] = 1 if features['remaining_lease_years'] >= 20 else 0
     features['cash_buyers_only'] = 1 if features['remaining_lease_years'] < 20 else 0
-    # Categorical (Label Encoders)
+
     categorical_features = ['town','flat_type','flat_model','market_segment','lease_health','storey_category']
     label_encoders = preprocessing_objects.get('label_encoders', {})
     feature_names = preprocessing_objects.get('feature_names', [])
+
     for cat in categorical_features:
         if cat == 'market_segment': val = get_market_segment(user_input['flat_type'])
         elif cat == 'lease_health': val = get_lease_health(features['remaining_lease_years'])
@@ -291,12 +296,12 @@ def preprocess_input_tree(user_input, preprocessing_objects):
                 features[f'{cat}_encoded'] = le.transform([str(val)])[0]
             except ValueError:
                 features[f'{cat}_encoded'] = 0
+
     feature_df = pd.DataFrame([features]).reindex(columns=feature_names, fill_value=0)
     return feature_df.values
 
 def preprocess_input_boosting(user_input, preprocessing_objects):
     features = {}
-    # Numerical
     features['floor_area_sqm'] = user_input['floor_area_sqm']
     features['storey_level'] = user_input['storey_level']
     features['flat_age'] = user_input['flat_age']
@@ -309,6 +314,7 @@ def preprocess_input_boosting(user_input, preprocessing_objects):
     features['bank_loan_eligible'] = 1 if features['remaining_lease_years'] >= 60 else 0
     features['hdb_loan_eligible'] = 1 if features['remaining_lease_years'] >= 20 else 0
     features['cash_buyers_only'] = 1 if features['remaining_lease_years'] < 20 else 0
+
     # Target-encode high-cardinality
     target_encode_features = ['town','flat_model']
     target_encoders = preprocessing_objects.get('target_encoders', {})
@@ -320,6 +326,7 @@ def preprocess_input_boosting(user_input, preprocessing_objects):
                 features[f'{f}_target_encoded'] = te.transform(tmp).ravel()[0]
             except Exception:
                 features[f'{f}_target_encoded'] = 500000
+
     # Label-encode low-cardinality
     label_encode_features = ['flat_type','market_segment','lease_health']
     label_encoders = preprocessing_objects.get('label_encoders', {})
@@ -333,11 +340,12 @@ def preprocess_input_boosting(user_input, preprocessing_objects):
                 features[f'{f}_encoded'] = le.transform([str(val)])[0]
             except ValueError:
                 features[f'{f}_encoded'] = 0
+
     feature_names = preprocessing_objects.get('feature_names', [])
     feature_df = pd.DataFrame([features]).reindex(columns=feature_names, fill_value=0)
     return feature_df.values
 
-# ---------- Prediction (keeps improved ensemble) ----------
+# ---------- Prediction ----------
 def predict_price(user_input, models):
     predictions = {}
     try:
@@ -350,11 +358,11 @@ def predict_price(user_input, models):
         X_boost = preprocess_input_boosting(user_input, models['boosting_prep'])
         predictions['boosting'] = max(0, models['boosting'].predict(X_boost)[0])
 
-        # Improved weighted ensemble (explicit members + normalization)
-        weights = {'linear':0.2,'tree':0.4,'boosting':0.4}
-        members = ['linear','tree','boosting']
+        # Weighted ensemble with explicit members + normalization
+        weights = {'linear': 0.2, 'tree': 0.4, 'boosting': 0.4}
+        members = ['linear', 'tree', 'boosting']
         w_sum = sum(weights[m] for m in members) or 1.0
-        predictions['ensemble'] = sum(predictions[m]*weights[m] for m in members)/w_sum
+        predictions['ensemble'] = sum(predictions[m] * weights[m] for m in members) / w_sum
         return predictions
     except Exception as e:
         st.error(f"Error making predictions: {e}")
@@ -362,65 +370,58 @@ def predict_price(user_input, models):
 
 # ---------- Charts ----------
 def create_prediction_chart(predictions, height=400):
-    names = ['Linear Model','Tree Model','Boosting Model','Ensemble']
-    keys  = ['linear','tree','boosting','ensemble']
+    names  = ['Linear Model','Tree Model','Boosting Model','Ensemble']
+    keys   = ['linear','tree','boosting','ensemble']
     prices = [predictions[k] for k in keys]
     colors = ['#ff7f0e','#2ca02c','#d62728','#1f77b4']
-    fig = go.Figure(data=[go.Bar(x=names,y=prices,marker_color=colors,
-                                 text=[f'${p:,.0f}' for p in prices], textposition='auto')])
-    fig.update_layout(title='Price Predictions by Model',
-                      xaxis_title='Model Type', yaxis_title='Predicted Price (SGD)',
-                      showlegend=False, height=height, template='plotly_white')
+
+    fig = go.Figure(data=[go.Bar(
+        x=names, y=prices, marker_color=colors,
+        text=[f'${p:,.0f}' for p in prices], textposition='auto'
+    )])
+    fig.update_layout(
+        title='Price Predictions by Model',
+        xaxis_title='Model Type', yaxis_title='Predicted Price (SGD)',
+        showlegend=False, height=height, template='plotly_white'
+    )
     return fig
 
 def create_market_insights_chart(reference_data, user_input, predicted_price, height=400):
-    # Always return a valid Figure (even when data is missing)
+    # Always return a valid figure (never None)
     fig = go.Figure()
     fig.update_layout(template="plotly_white", height=height)
 
-    # Guard: no reference data loaded
     if not reference_data or "sample_data" not in reference_data:
         fig.update_layout(
             title="Market Position (no reference data available)",
-            annotations=[dict(text="No reference data to display",
-                              x=0.5, y=0.5, xref="paper", yref="paper",
-                              showarrow=False)]
+            annotations=[dict(text="No reference data to display", x=0.5, y=0.5,
+                              xref="paper", yref="paper", showarrow=False)]
         )
         return fig
 
     df = reference_data["sample_data"]
 
-    # Try to find similar rows
     similar = df[(df.get('flat_type') == user_input['flat_type']) &
                  (df.get('town') == user_input['town'])]
-
-    # Fallback: relax to same flat_type only
     if similar is None or len(similar) < 5:
         similar = df[df.get('flat_type') == user_input['flat_type']]
 
-    # If still empty, show an empty chart (but valid Figure)
     if similar is None or len(similar) == 0:
         fig.update_layout(
             title=f"Market Position: {user_input['flat_type']} in {user_input['town']}",
-            annotations=[dict(text="No similar transactions found",
-                              x=0.5, y=0.5, xref="paper", yref="paper",
-                              showarrow=False)]
+            annotations=[dict(text="No similar transactions found", x=0.5, y=0.5,
+                              xref="paper", yref="paper", showarrow=False)]
         )
         return fig
 
-    # Normal happy path (like the original)
     fig = px.scatter(
         similar,
-        x='floor_area_sqm',
-        y='resale_price',
-        color='flat_model',
+        x='floor_area_sqm', y='resale_price', color='flat_model',
         title=f"Market Position: {user_input['flat_type']} in {user_input['town']}",
         labels={'floor_area_sqm':'Floor Area (sqm)','resale_price':'Resale Price (SGD)'}
     )
     fig.add_trace(go.Scatter(
-        x=[user_input['floor_area_sqm']],
-        y=[predicted_price],
-        mode='markers',
+        x=[user_input['floor_area_sqm']], y=[predicted_price], mode='markers',
         marker=dict(symbol='star', size=20, color='red', line=dict(width=2, color='darkred')),
         name='Your Property',
         hovertemplate=(
@@ -430,9 +431,7 @@ def create_market_insights_chart(reference_data, user_input, predicted_price, he
         )
     ))
     fig.update_layout(
-        template="plotly_white",
-        height=height,
-        showlegend=True,
+        template="plotly_white", height=height, showlegend=True,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
     return fig
@@ -486,8 +485,7 @@ def render_inputs(container):
 
 # ---------- Desktop layout ----------
 def render_desktop(models, reference_data):
-    st.markdown('<h1 class="main-header">🏠 HDB Price Predictor</h1>', unsafe_allow_html=True)
-    st.markdown('<div class="info-center">Predict HDB resale prices using advanced machine learning ensemble models</div>', unsafe_allow_html=True)
+    render_header()
 
     # Sidebar inputs
     st.sidebar.header("🏠 Property Details")
@@ -555,18 +553,18 @@ def render_desktop(models, reference_data):
             hdb_ok  = remaining_lease >= 20
             l, r = st.columns(2)
             with l:
-                st.markdown('<div class="insight-label">Price per sqm</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="insight-label">Price per sqm</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="insight-value">${price_psm:,.0f}</div>', unsafe_allow_html=True)
-                st.markdown('<div class="insight-label">Market Segment</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="insight-label">Market Segment</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="insight-value">{market_seg}</div>', unsafe_allow_html=True)
-                st.markdown('<div class="insight-label">Lease Health</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="insight-label">Lease Health</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="insight-value">{lease_health}</div>', unsafe_allow_html=True)
             with r:
-                st.markdown('<div class="insight-label">Bank Loan Eligible</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="insight-label">Bank Loan Eligible</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="insight-value">{"✅ Yes" if bank_ok else "❌ No"}</div>', unsafe_allow_html=True)
-                st.markdown('<div class="insight-label">HDB Loan Eligible</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="insight-label">HDB Loan Eligible</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="insight-value">{"✅ Yes" if hdb_ok else "❌ No"}</div>', unsafe_allow_html=True)
-                st.markdown('<div class="insight-label">Remaining Lease</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="insight-value">{remaining_lease} years</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="insight-value">{remaining_lease} years</div>', unsafe_allow_html=True)
 
         st.subheader("🤖 About the Models")
@@ -582,12 +580,11 @@ def render_desktop(models, reference_data):
 
 # ---------- Mobile layout ----------
 def render_mobile(models, reference_data):
-    st.markdown('<h1 class="main-header">🏠 HDB Price Predictor</h1>', unsafe_allow_html=True)
-    st.markdown('<div class="info-center">Predict HDB resale prices using machine learning (mobile-optimized)</div>', unsafe_allow_html=True)
+    render_header()
 
     # Inputs on main view (sidebar hidden on mobile via CSS)
-    with st.expander("🔧 Property Details", expanded=True):
-        user_input, remaining_lease = render_inputs(st)
+    exp = st.expander("🔧 Property Details", expanded=True)
+    user_input, remaining_lease = render_inputs(exp)
 
     # Predict button (full width)
     if st.button("🔮 Predict Price", type="primary", use_container_width=True):
@@ -609,23 +606,18 @@ def render_mobile(models, reference_data):
             unsafe_allow_html=True,
         )
 
-        # Model metrics (stacked)
         st.subheader("📊 Model Comparison")
         st.markdown(f"""<div class="metric-card"><h4>📈 Linear Model</h4><h3>${preds['linear']:,.0f}</h3></div>""", unsafe_allow_html=True)
         st.markdown(f"""<div class="metric-card"><h4>🌳 Tree Model</h4><h3>${preds['tree']:,.0f}</h3></div>""", unsafe_allow_html=True)
         st.markdown(f"""<div class="metric-card"><h4>🚀 Boosting Model</h4><h3>${preds['boosting']:,.0f}</h3></div>""", unsafe_allow_html=True)
 
-        # Smaller charts on mobile
         st.plotly_chart(create_prediction_chart(preds, height=320), use_container_width=True)
 
         if reference_data:
             st.subheader("📈 Market Insights")
-            st.plotly_chart(
-                create_market_insights_chart(reference_data, user_input, ens, height=320),
-                use_container_width=True
-            )
+            fig = create_market_insights_chart(reference_data, user_input, ens, height=320)
+            st.plotly_chart(fig, use_container_width=True)
 
-        # Summary + insights (stacked)
         st.subheader("📋 Property Summary")
         summary = {
             "Location": user_input['town'],
@@ -636,7 +628,7 @@ def render_mobile(models, reference_data):
             "Age": f"{user_input['flat_age']} years",
             "Remaining Lease": f"{remaining_lease} years",
         }
-        for k,v in summary.items():
+        for k, v in summary.items():
             st.text(f"{k}: {v}")
 
         st.subheader("💡 Property Insights")
@@ -657,29 +649,9 @@ def render_mobile(models, reference_data):
         st.markdown('<div class="insight-label">HDB Loan Eligible</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="insight-value">{"✅ Yes" if hdb_ok else "❌ No"}</div>', unsafe_allow_html=True)
 
-    # # Handy control to re-detect layout (e.g., rotation)
-    # with st.expander("⚙️ Layout options"):
-    #     if st.button("Re-detect screen size"):
-    #         params = st.experimental_get_query_params()
-    #         params.pop("w", None)
-    #         qs = "&".join([f"{k}={v[0]}" for k,v in params.items()])
-    #         components.html(
-    #             f"""
-    #             <script>
-    #             const params = new URLSearchParams(window.location.search);
-    #             params.delete('w');
-    #             const newQuery = params.toString();
-    #             window.location.replace(window.location.pathname + (newQuery ? '?' + newQuery : ''));
-    #             </script>
-    #             """,
-    #             height=0, width=0
-    #         )
-    #         st.experimental_rerun()
-
-    # Handy control to re-detect layout (e.g., rotation)
+    # Re-detect layout (e.g., rotation)
     with st.expander("⚙️ Layout options"):
         if st.button("Re-detect screen size", use_container_width=True):
-            # Clear the param in Streamlit, then also clean the URL via JS
             if "w" in st.query_params:
                 del st.query_params["w"]
             components.html(
@@ -694,7 +666,6 @@ def render_mobile(models, reference_data):
                 height=0, width=0
             )
             st.rerun()
-
 
 # ---------- Main ----------
 def main():
