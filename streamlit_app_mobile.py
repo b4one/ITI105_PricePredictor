@@ -565,7 +565,7 @@ def render_desktop(models, reference_data):
                 st.markdown(f'<div class="insight-label">HDB Loan Eligible</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="insight-value">{"✅ Yes" if hdb_ok else "❌ No"}</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="insight-value">{remaining_lease} years</div>', unsafe_allow_html=True)
-                st.markdown(f'<div class="insight-value">{remaining_lease} years</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="insight-value">{remaining_lease} years</div>', unsafe_allow_html=True) 
 
         st.subheader("🤖 About the Models")
         st.info("""**Ensemble Approach:**
